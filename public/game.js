@@ -13,6 +13,69 @@ const keys = { w: false, a: false, s: false, d: false, space: false };
 const velocity = { y: 0 };
 let canJump = false;
 
+function setupThreeJS() {
+    // Create scene
+    scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x87ceeb); // light-ish sky
+
+    // Camera
+    camera = new THREE.PerspectiveCamera(
+        75,
+        window.innerWidth / window.innerHeight,
+        0.1,
+        1000
+    );
+
+    // Start camera roughly in the middle of the world
+    const center = (CONFIG.WORLD_SIZE * CONFIG.BLOCK_SIZE) / 2;
+    camera.position.set(center, 40, center + 40);
+    camera.lookAt(center, 0, center);
+
+    // Renderer
+    renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(window.devicePixelRatio || 1);
+    document.body.appendChild(renderer.domElement);
+
+    // Basic lighting
+    const ambient = new THREE.AmbientLight(0xffffff, 0.6);
+    scene.add(ambient);
+
+    const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+    dirLight.position.set(50, 100, 50);
+    scene.add(dirLight);
+
+    // Handle window resize
+    window.addEventListener('resize', () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+}
+
+function generateWorld() {
+    if (!scene) {
+        console.error("Scene not initialized before generateWorld()");
+        return;
+    }
+
+    if (typeof World !== "undefined" && World.generate) {
+        // Build terrain meshes + height map
+        World.generate(scene);
+
+        // Old code expects worldHeights[x][z]
+        window.worldHeights = World.heightMap;
+    } else {
+        console.error("World module missing – no terrain generated.");
+        // Fallback: flat world so physics doesn't explode
+        window.worldHeights = Array(WORLD_SIZE)
+            .fill(0)
+            .map(() => Array(WORLD_SIZE).fill(0));
+    }
+}
+
+
+
 function initGame(token) {
     setupThreeJS();
     generateWorld();
