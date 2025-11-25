@@ -61,11 +61,15 @@ app.post('/api/join', (req, res) => {
             isAdmin: false 
         });
 
+        console.log("JOIN: invite", invite, "-> token", token);
+        dumpSessions();
+
         res.json({ success: true, token: token });
     } else {
         res.json({ success: false, error: "Invalid or expired invite code." });
     }
 });
+
 
 app.post('/api/generate-invite', (req, res) => {
     const { token } = req.body;
@@ -106,15 +110,20 @@ io.engine.on("connection_error", (err) => {
 
 io.use((socket, next) => {
     const token = socket.handshake.auth.token;
+    console.log("SOCKET AUTH ATTEMPT, token =", token, "has?", sessions.has(token));
+
     const session = sessions.get(token);
 
     if (session) {
         socket.user = session;
         next();
     } else {
+        console.log("AUTH FAIL for token", token);
+        dumpSessions();
         next(new Error("Authentication error"));
     }
 });
+
 
 io.on('connection', (socket) => {
     const user = socket.user;
@@ -156,6 +165,14 @@ io.on('connection', (socket) => {
         io.emit('player-left', socket.id);
     });
 });
+
+function dumpSessions() {
+    console.log("Current sessions:");
+    for (const [tok, sess] of sessions.entries()) {
+        console.log("  ", tok, "->", sess.name, sess.isAdmin ? "ADMIN" : "player");
+    }
+}
+
 
 server.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
