@@ -26,8 +26,12 @@ app.get('/kitchen', (req, res) => {
     res.sendFile(__dirname + '/pantry/kitchen.html');
 });
 
-app.get('/admin.js', (req, res) => {
-    res.sendFile(__dirname + '/pantry/admin.js');
+app.get('/kitchen.css', (req, res) => {
+    res.sendFile(__dirname + '/pantry/kitchen.css');
+});
+
+app.get('/kitchen.js', (req, res) => {
+    res.sendFile(__dirname + '/pantry/kitchen.js');
 });
 
 // Generate a valid random hex color
