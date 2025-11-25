@@ -96,6 +96,14 @@ app.post('/api/nuke', (req, res) => {
     }
 });
 
+io.engine.on("connection_error", (err) => {
+    console.log("ENGINE.IO CONNECTION ERROR");
+    console.log(" code:", err.code);        // e.g. 1 = Session ID unknown, 3 = Bad request
+    console.log(" message:", err.message);  // human-readable
+    console.log(" context:", err.context);  // extra info (like TRANSPORT_MISMATCH, etc.)
+});
+
+
 io.use((socket, next) => {
     const token = socket.handshake.auth.token;
     const session = sessions.get(token);

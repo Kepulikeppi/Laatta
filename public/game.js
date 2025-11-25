@@ -94,9 +94,11 @@ function setupSocket(token) {
     });
 
     socket.on('connect_error', (err) => {
-        alert("Connection rejected: " + err.message);
-        location.reload();
+        console.error('connect_error:', err.message, err.description, err.context);
+        alert("Connection problem: " + err.message);
+        // remove location.reload();
     });
+
 
     socket.on('connect', () => {
         console.log("Connected to game server");
