@@ -26,8 +26,8 @@ app.get('/kitchen', (req, res) => {
     res.sendFile(__dirname + '/pantry/kitchen.html');
 });
 
-app.get('/k-supply.js', (req, res) => {
-    res.sendFile(__dirname + '/pantry/controls.js');
+app.get('/admin.js', (req, res) => {
+    res.sendFile(__dirname + '/pantry/admin.js');
 });
 
 app.post('/api/login', (req, res) => {
