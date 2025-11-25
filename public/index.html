@@ -5,74 +5,39 @@
     <title>Laatta</title>
     <style>
         body { margin: 0; overflow: hidden; font-family: sans-serif; background: #1a1a1a; color: white; }
-        
-        /* UI Layers */
         .screen { position: absolute; top:0; left:0; width:100%; height:100%; display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 20; background: #1a1a1a; }
         #game-ui { display: none; position: absolute; top:0; left:0; width:100%; height:100%; pointer-events: none; z-index: 10; }
         
-        /* Controls */
-        input { padding: 12px; margin: 10px; border-radius: 4px; border: 1px solid #444; background: #333; color: white; width: 250px; }
-        button { padding: 12px 24px; cursor: pointer; background: #4CAF50; color: white; border: none; border-radius: 4px; font-weight: bold; }
+        input { padding: 12px; margin: 10px; border-radius: 4px; border: 1px solid #444; background: #333; color: white; width: 250px; text-align: center; }
+        button { padding: 12px 24px; cursor: pointer; background: #4CAF50; color: white; border: none; border-radius: 4px; font-weight: bold; margin-top: 10px; }
         button:hover { background: #45a049; }
-        .hidden { display: none !important; }
+        .error { color: #ff6b6b; margin-top: 15px; }
         
-        /* Chat & Voice */
         #chat-container { position: absolute; bottom: 10px; left: 10px; pointer-events: auto; width: 320px; }
         #chat-history { height: 200px; overflow-y: auto; background: rgba(0,0,0,0.6); padding: 10px; border-radius: 4px; margin-bottom: 5px; }
         #chat-input { width: 100%; box-sizing: border-box; display: none; }
         #voice-controls { position: absolute; top: 10px; right: 10px; pointer-events: auto; background: rgba(0,0,0,0.5); padding: 10px; border-radius: 4px; }
-        
-        .error { color: #ff6b6b; margin-top: 10px; }
     </style>
-    <!-- Three.js & Socket.io -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script src="/socket.io/socket.io.js"></script>
 </head>
 <body>
 
-    <!-- SCREEN 1: LOGIN / JOIN -->
     <div id="auth-screen" class="screen">
-        <h1 style="margin-bottom: 40px; font-size: 3em; text-shadow: 0 4px 0 #000;">Laatta</h1>
+        <h1 style="margin-bottom: 40px; font-size: 3em; letter-spacing: 5px;">LAATTA</h1>
         
-        <!-- Tab System -->
-        <div style="margin-bottom: 20px;">
-            <button onclick="showTab('join')" id="tab-join" style="background:#555">Have Invite?</button>
-            <button onclick="showTab('admin')" id="tab-admin" style="background:#333">Admin Login</button>
-        </div>
-
-        <!-- Join Form -->
-        <div id="form-join">
-            <input type="text" id="join-name" placeholder="Character Name"><br>
-            <input type="text" id="join-code" placeholder="Invite Code"><br>
-            <button onclick="attemptJoin()">Enter World</button>
-        </div>
-
-        <!-- Admin Form -->
-        <div id="form-admin" class="hidden">
-            <input type="text" id="admin-name" placeholder="Admin Name" value="Admin"><br>
-            <input type="password" id="admin-pass" placeholder="Admin Password"><br>
-            <button onclick="attemptAdmin()">Login as Admin</button>
-        </div>
-
+        <input type="text" id="join-name" placeholder="Your Name">
+        <input type="text" id="join-code" placeholder="Invite Code">
+        <button onclick="attemptJoin()">ENTER WORLD</button>
+        
         <div id="auth-error" class="error"></div>
     </div>
 
-    <!-- SCREEN 2: ADMIN DASHBOARD (Overlay) -->
-    <div id="admin-overlay" class="screen hidden" style="background: rgba(0,0,0,0.9); z-index: 30;">
-        <h2>Admin Controls</h2>
-        <button onclick="generateInvite()" style="font-size: 1.2em;">Generate New Invite Link</button>
-        <p>Send this code to friends:</p>
-        <div id="invite-display" style="font-family: monospace; font-size: 2em; background: #333; padding: 10px; select-all: true;">...</div>
-        <br><br>
-        <button onclick="closeAdminOverlay()" style="background: #666;">Back to Game</button>
-    </div>
-
-    <!-- GAME UI -->
     <div id="game-ui">
         <div id="voice-controls">
             <strong>Voice:</strong> 
-            <button id="btn-ptt" style="padding: 5px 10px; font-size: 12px;">Push-to-Talk (V)</button> 
-            <button id="btn-open" style="padding: 5px 10px; font-size: 12px;">Always On</button>
+            <button id="btn-ptt">Push-to-Talk (V)</button> 
+            <button id="btn-open">Always On</button>
         </div>
         <div id="chat-container">
             <div id="chat-history"></div>
@@ -82,61 +47,19 @@
 
     <script src="game.js"></script>
     <script>
-        let myToken = null;
-        let isAdmin = false;
-
-        // Auto-fill invite code from URL
         const params = new URLSearchParams(window.location.search);
-        if(params.has('invite')) {
-            document.getElementById('join-code').value = params.get('invite');
-        }
-
-        function showTab(tab) {
-            document.getElementById('auth-error').innerText = '';
-            if(tab === 'join') {
-                document.getElementById('form-join').classList.remove('hidden');
-                document.getElementById('form-admin').classList.add('hidden');
-                document.getElementById('tab-join').style.background = '#555';
-                document.getElementById('tab-admin').style.background = '#333';
-            } else {
-                document.getElementById('form-join').classList.add('hidden');
-                document.getElementById('form-admin').classList.remove('hidden');
-                document.getElementById('tab-join').style.background = '#333';
-                document.getElementById('tab-admin').style.background = '#555';
-            }
-        }
-
-        async function attemptAdmin() {
-            const pass = document.getElementById('admin-pass').value;
-            const name = document.getElementById('admin-name').value;
-            
-            try {
-                const res = await fetch('/api/login', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ password: pass, name: name })
-                });
-                const data = await res.json();
-                
-                if(data.success) {
-                    myToken = data.token;
-                    isAdmin = true;
-                    startGame(data.token);
-                    // Show admin overlay immediately
-                    document.getElementById('admin-overlay').classList.remove('hidden');
-                } else {
-                    document.getElementById('auth-error').innerText = data.error;
-                }
-            } catch(e) {
-                document.getElementById('auth-error').innerText = "Connection Failed";
-            }
-        }
+        if(params.has('invite')) document.getElementById('join-code').value = params.get('invite');
 
         async function attemptJoin() {
             const code = document.getElementById('join-code').value;
             const name = document.getElementById('join-name').value;
+            const btn = document.querySelector('button');
+            const err = document.getElementById('auth-error');
             
-            if(!name || !code) return;
+            if(!name || !code) { err.innerText = "Please fill in both fields"; return; }
+            
+            btn.innerText = "CONNECTING...";
+            err.innerText = "";
 
             try {
                 const res = await fetch('/api/join', {
@@ -147,38 +70,17 @@
                 const data = await res.json();
                 
                 if(data.success) {
-                    myToken = data.token;
-                    startGame(data.token);
+                    document.getElementById('auth-screen').style.display = 'none';
+                    document.getElementById('game-ui').style.display = 'block';
+                    initGame(data.token);
                 } else {
-                    document.getElementById('auth-error').innerText = data.error;
+                    err.innerText = data.error;
+                    btn.innerText = "ENTER WORLD";
                 }
             } catch(e) {
-                document.getElementById('auth-error').innerText = "Connection Failed";
+                err.innerText = "Server Unreachable";
+                btn.innerText = "ENTER WORLD";
             }
-        }
-
-        async function generateInvite() {
-            if(!isAdmin) return;
-            const res = await fetch('/api/generate-invite', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({ token: myToken })
-            });
-            const data = await res.json();
-            if(data.success) {
-                const link = window.location.origin + "?invite=" + data.code;
-                document.getElementById('invite-display').innerText = link;
-            }
-        }
-
-        function closeAdminOverlay() {
-            document.getElementById('admin-overlay').classList.add('hidden');
-        }
-
-        function startGame(token) {
-            document.getElementById('auth-screen').classList.add('hidden');
-            document.getElementById('game-ui').style.display = 'block';
-            initGame(token); // Call game.js
         }
     </script>
 </body>

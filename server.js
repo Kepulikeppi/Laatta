@@ -8,32 +8,38 @@ const server = http.createServer(app);
 const io = new Server(server);
 const PORT = process.env.PORT || 3000;
 
-// --- SECURITY & STATE ---
-// Get password from DigitalOcean Environment Variable, or fallback to 'supersecret'
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "supersecret";
+// --- SECURITY CHECK ---
+// The server will refuse to start if the password is not set in the environment
+if (!process.env.ADMIN_PASSWORD) {
+    console.error("❌ CRITICAL ERROR: ADMIN_PASSWORD is missing.");
+    console.error("Please set the Environment Variable in DigitalOcean/Kinsta settings.");
+    process.exit(1);
+}
 
-// Store valid invite codes (e.g., 'abc-123')
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
 const validInvites = new Set();
-
-// Store active sessions: Token -> { name, color, isAdmin }
 const sessions = new Map();
-
-// Store game state
 let players = {};
 
 app.use(express.static('public'));
 app.use(express.json());
 
-// --- 1. HTTP API (The Gatekeeper) ---
+// Routes
+app.get('/', (req, res) => {
+    res.sendFile(__dirname + '/public/index.html');
+});
 
-// Admin Login
+app.get('/kitchen', (req, res) => {
+    res.sendFile(__dirname + '/public/kitchen.html');
+});
+
+// API: Login
 app.post('/api/login', (req, res) => {
     const { password, name } = req.body;
     
-    // Server-side check. The client never knows the real password.
+    // Server-side validation
     if (password === ADMIN_PASSWORD) {
         const token = uuidv4();
-        // Register this token as an Admin
         sessions.set(token, { 
             name: name || "Admin", 
             color: '#FF0000', 
@@ -43,30 +49,24 @@ app.post('/api/login', (req, res) => {
         console.log(`Admin logged in. Token: ${token}`);
         res.json({ success: true, token: token });
     } else {
-        // Delay response slightly to prevent brute-force timing attacks
+        // Slow down brute force attempts
         setTimeout(() => res.json({ success: false, error: "Invalid Password" }), 500);
     }
 });
 
-// Player Join (via Invite)
+// API: Join (Public)
 app.post('/api/join', (req, res) => {
     const { invite, name } = req.body;
 
-    // Check if invite exists in server memory
     if (validInvites.has(invite)) {
         const token = uuidv4();
-        // Generate random color
         const color = '#' + Math.floor(Math.random()*16777215).toString(16);
         
-        // Register token
         sessions.set(token, { 
-            name: name.substring(0, 15), // Limit name length
+            name: name.substring(0, 15),
             color: color, 
             isAdmin: false 
         });
-
-        // Optional: Remove invite after use? 
-        // validInvites.delete(invite); 
 
         res.json({ success: true, token: token });
     } else {
@@ -74,13 +74,13 @@ app.post('/api/join', (req, res) => {
     }
 });
 
-// Generate Invite (Protected: Only Admins can do this)
+// API: Generate Invite (Protected)
 app.post('/api/generate-invite', (req, res) => {
     const { token } = req.body;
     const session = sessions.get(token);
 
     if (session && session.isAdmin) {
-        const newCode = uuidv4().substring(0, 8); // Short code
+        const newCode = uuidv4().substring(0, 8);
         validInvites.add(newCode);
         console.log(`Invite generated: ${newCode}`);
         res.json({ success: true, code: newCode });
@@ -89,16 +89,12 @@ app.post('/api/generate-invite', (req, res) => {
     }
 });
 
-// --- 2. SOCKET.IO (The Game Loop) ---
-
-// Middleware: This runs BEFORE a socket connects.
-// It checks if the user has a valid token from the HTTP step above.
+// Socket.io Authentication Middleware
 io.use((socket, next) => {
     const token = socket.handshake.auth.token;
     const session = sessions.get(token);
 
     if (session) {
-        // Attach user info to the socket object so we can use it later
         socket.user = session;
         next();
     } else {
@@ -106,11 +102,10 @@ io.use((socket, next) => {
     }
 });
 
+// Socket.io Game Loop
 io.on('connection', (socket) => {
-    const user = socket.user; // We know who they are now
-    console.log(`User connected: ${user.name} (${socket.id})`);
-
-    // Add to game state
+    const user = socket.user;
+    
     players[socket.id] = {
         id: socket.id,
         name: user.name,
@@ -118,11 +113,9 @@ io.on('connection', (socket) => {
         x: 0, y: 0, z: 0, rot: 0
     };
 
-    // Send init data
     socket.broadcast.emit('player-joined', players[socket.id]);
     socket.emit('current-players', players);
 
-    // Movement
     socket.on('move', (data) => {
         if (players[socket.id]) {
             players[socket.id].x = data.x;
@@ -133,14 +126,11 @@ io.on('connection', (socket) => {
         }
     });
 
-    // Chat
     socket.on('chat', (msg) => {
-        // Sanitize HTML to prevent XSS
         const cleanMsg = String(msg).replace(/</g, "&lt;").substring(0, 100);
         io.emit('chat-message', { name: user.name, msg: cleanMsg });
     });
 
-    // Voice Signaling
     socket.on('voice-signal', (data) => {
         io.to(data.target).emit('voice-signal', {
             from: socket.id,
@@ -151,8 +141,6 @@ io.on('connection', (socket) => {
     socket.on('disconnect', () => {
         delete players[socket.id];
         io.emit('player-left', socket.id);
-        // Note: We don't delete the session from the map immediately 
-        // in case they just refreshed the page.
     });
 });
 
