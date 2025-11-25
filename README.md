@@ -1,2 +1,2 @@
-# laatta
-Laatta: a browser-based multiplayer game
+# Laatta
+A browser-based multiplayer game
