@@ -1,7 +1,7 @@
 {
   "name": "Laatta",
   "version": "1.0.0",
-  "description": "A browser-based multiplayer game",
+  "description": "A browser-based multiplayer block world game",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"

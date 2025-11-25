@@ -1,40 +1,44 @@
-// --- CONFIG ---
-const WORLD_SIZE = 60;
-const BLOCK_SIZE = 5;
-
+// --- GAME STATE ---
 let scene, camera, renderer, socket;
 let players = {};
-let peers = {}; 
+let peers = {};
 let localStream;
 let isPushToTalk = true;
+let isPointerLocked = false;
+
+// Camera rotation (for mouse look)
+let pitch = 0; // Up/down rotation
+let yaw = 0;   // Left/right rotation
 
 // Inputs
 const keys = { w: false, a: false, s: false, d: false, space: false };
 const velocity = { y: 0 };
 let canJump = false;
 
+// Player info
+let myName = "";
+let myColor = "";
+
 function setupThreeJS() {
     // Create scene
     scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x87ceeb); // light-ish sky
+    scene.background = new THREE.Color(CONFIG.FOG_COLOR);
+    
+    // Add fog
+    scene.fog = new THREE.Fog(CONFIG.FOG_COLOR, CONFIG.FOG_NEAR, CONFIG.FOG_FAR);
 
     // Camera
     camera = new THREE.PerspectiveCamera(
         75,
         window.innerWidth / window.innerHeight,
         0.1,
-        1000
+        CONFIG.VIEW_DISTANCE
     );
-
-    // Start camera roughly in the middle of the world
-    const center = (CONFIG.WORLD_SIZE * CONFIG.BLOCK_SIZE) / 2;
-    camera.position.set(center, 40, center + 40);
-    camera.lookAt(center, 0, center);
 
     // Renderer
     renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setSize(window.innerWidth, window.innerHeight);
-    renderer.setPixelRatio(window.devicePixelRatio || 1);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     document.body.appendChild(renderer.domElement);
 
     // Basic lighting
@@ -51,6 +55,46 @@ function setupThreeJS() {
         camera.updateProjectionMatrix();
         renderer.setSize(window.innerWidth, window.innerHeight);
     });
+    
+    // Setup pointer lock for mouse look
+    setupPointerLock();
+}
+
+function setupPointerLock() {
+    const canvas = renderer.domElement;
+    
+    canvas.addEventListener('click', () => {
+        if (!isPointerLocked && document.activeElement.tagName !== 'INPUT') {
+            canvas.requestPointerLock();
+        }
+    });
+    
+    document.addEventListener('pointerlockchange', () => {
+        isPointerLocked = document.pointerLockElement === canvas;
+        updateUIVisibility();
+    });
+    
+    document.addEventListener('mousemove', (e) => {
+        if (!isPointerLocked) return;
+        
+        yaw -= e.movementX * CONFIG.MOUSE_SENSITIVITY;
+        pitch -= e.movementY * CONFIG.MOUSE_SENSITIVITY;
+        
+        // Clamp pitch to prevent over-rotation
+        pitch = Math.max(-Math.PI / 2 + 0.1, Math.min(Math.PI / 2 - 0.1, pitch));
+        
+        // Apply rotation to camera
+        camera.rotation.order = 'YXZ';
+        camera.rotation.y = yaw;
+        camera.rotation.x = pitch;
+    });
+}
+
+function updateUIVisibility() {
+    const hint = document.getElementById('pointer-hint');
+    if (hint) {
+        hint.style.display = isPointerLocked ? 'none' : 'block';
+    }
 }
 
 function generateWorld() {
@@ -60,45 +104,45 @@ function generateWorld() {
     }
 
     if (typeof World !== "undefined" && World.generate) {
-        // Build terrain meshes + height map
         World.generate(scene);
-
-        // Old code expects worldHeights[x][z]
         window.worldHeights = World.heightMap;
     } else {
         console.error("World module missing – no terrain generated.");
-        // Fallback: flat world so physics doesn't explode
-        window.worldHeights = Array(WORLD_SIZE)
+        window.worldHeights = Array(CONFIG.WORLD_SIZE)
             .fill(0)
-            .map(() => Array(WORLD_SIZE).fill(0));
+            .map(() => Array(CONFIG.WORLD_SIZE).fill(0));
     }
 }
 
-
-
-function initGame(token) {
+function initGame(token, playerName, playerColor) {
+    myName = playerName || "Player";
+    myColor = playerColor || "#FFFFFF";
+    
     setupThreeJS();
     generateWorld();
-    setupSocket(token); // PASS TOKEN HERE
+    
+    // Set spawn position
+    const spawnX = CONFIG.SPAWN_X;
+    const spawnZ = CONFIG.SPAWN_Z;
+    const spawnY = World.getSpawnHeight();
+    
+    camera.position.set(spawnX, spawnY, spawnZ);
+    
+    setupSocket(token);
     setupInputs();
     setupAudio();
     animate();
 }
 
 function setupSocket(token) {
-    // Connect with the session token we got from the login screen
     socket = io({
-        auth: {
-            token: token
-        }
+        auth: { token: token }
     });
 
     socket.on('connect_error', (err) => {
-        console.error('connect_error:', err.message, err.description, err.context);
+        console.error('connect_error:', err.message);
         alert("Connection problem: " + err.message);
-        // remove location.reload();
     });
-
 
     socket.on('connect', () => {
         console.log("Connected to game server");
@@ -111,107 +155,204 @@ function setupSocket(token) {
                 initWebRTC(id, true);
             }
         }
+        updatePlayerList();
     });
 
     socket.on('player-joined', (p) => {
         createPlayerMesh(p.id, p);
         initWebRTC(p.id, false);
+        updatePlayerList();
+        
+        // Show join message in chat
+        addSystemMessage(`${p.name} joined the game`);
     });
 
     socket.on('player-moved', (p) => {
         if (players[p.id]) {
             players[p.id].mesh.position.set(p.x, p.y, p.z);
             players[p.id].mesh.rotation.y = p.rot;
+            
+            // Update name label to face camera
+            if (players[p.id].label) {
+                players[p.id].label.lookAt(camera.position);
+            }
         }
     });
 
     socket.on('player-left', (id) => {
         if (players[id]) {
+            addSystemMessage(`${players[id].name} left the game`);
             scene.remove(players[id].mesh);
             delete players[id];
         }
-        if(peers[id]) {
+        if (peers[id]) {
             peers[id].close();
             delete peers[id];
         }
+        updatePlayerList();
     });
 
     socket.on('chat-message', (data) => {
-        const div = document.createElement('div');
-        div.style.marginBottom = "5px";
-        div.innerHTML = `<span style="color:#aaa">${data.name}:</span> ${data.msg}`;
-        const chatBox = document.getElementById('chat-history');
-        chatBox.appendChild(div);
-        chatBox.scrollTop = chatBox.scrollHeight;
+        addChatMessage(data.name, data.msg);
     });
 
     socket.on('voice-signal', handleVoiceSignal);
 }
 
+function addChatMessage(name, msg) {
+    const chatBox = document.getElementById('chat-history');
+    const div = document.createElement('div');
+    div.className = 'chat-msg';
+    div.innerHTML = `<span class="chat-name">${name}:</span> ${msg}`;
+    chatBox.appendChild(div);
+    chatBox.scrollTop = chatBox.scrollHeight;
+    
+    // Fade out old messages
+    setTimeout(() => {
+        div.style.opacity = '0.5';
+    }, 10000);
+}
+
+function addSystemMessage(msg) {
+    const chatBox = document.getElementById('chat-history');
+    const div = document.createElement('div');
+    div.className = 'chat-msg system-msg';
+    div.innerHTML = `<em>${msg}</em>`;
+    chatBox.appendChild(div);
+    chatBox.scrollTop = chatBox.scrollHeight;
+}
+
+function updatePlayerList() {
+    const list = document.getElementById('player-list');
+    if (!list) return;
+    
+    list.innerHTML = '<div class="player-list-title">Players Online</div>';
+    
+    // Add self
+    const selfItem = document.createElement('div');
+    selfItem.className = 'player-item';
+    selfItem.innerHTML = `<span class="player-color" style="background: ${myColor}"></span><span>${myName} (you)</span>`;
+    list.appendChild(selfItem);
+    
+    // Add other players
+    for (let id in players) {
+        const p = players[id];
+        const item = document.createElement('div');
+        item.className = 'player-item';
+        item.innerHTML = `<span class="player-color" style="background: ${p.color}"></span><span>${p.name}</span>`;
+        list.appendChild(item);
+    }
+}
+
 function createPlayerMesh(id, data) {
     const group = new THREE.Group();
-    const geometry = new THREE.BoxGeometry(4, 8, 4);
-    const material = new THREE.MeshLambertMaterial({ color: data.color });
+    
+    // Player body
+    const geometry = new THREE.BoxGeometry(CONFIG.PLAYER_WIDTH, CONFIG.PLAYER_HEIGHT, CONFIG.PLAYER_WIDTH);
+    
+    // Ensure valid color
+    let color = data.color;
+    if (!color || color.length < 7) {
+        color = '#' + Math.floor(Math.random() * 16777215).toString(16).padStart(6, '0');
+    }
+    
+    const material = new THREE.MeshLambertMaterial({ color: color });
     const mesh = new THREE.Mesh(geometry, material);
-    mesh.position.y = 4;
+    mesh.position.y = CONFIG.PLAYER_HEIGHT / 2;
     group.add(mesh);
 
-    // Name Label
+    // Name label using sprite
     const canvas = document.createElement('canvas');
+    canvas.width = 256;
+    canvas.height = 64;
     const ctx = canvas.getContext('2d');
-    ctx.font = 'Bold 20px Arial';
+    
+    // Clear canvas
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    
+    // Draw background
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+    ctx.roundRect(0, 16, canvas.width, 32, 8);
+    ctx.fill();
+    
+    // Draw text
+    ctx.font = 'Bold 24px Arial';
     ctx.fillStyle = 'white';
-    ctx.fillText(data.name, 0, 20);
-    const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(canvas) }));
-    sprite.position.y = 12;
-    sprite.scale.set(10, 5, 1);
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(data.name.substring(0, 15), canvas.width / 2, 32);
+    
+    const texture = new THREE.CanvasTexture(canvas);
+    const spriteMaterial = new THREE.SpriteMaterial({ map: texture, transparent: true });
+    const sprite = new THREE.Sprite(spriteMaterial);
+    sprite.position.y = CONFIG.PLAYER_HEIGHT + 3;
+    sprite.scale.set(12, 3, 1);
     group.add(sprite);
 
     scene.add(group);
-    players[id] = { mesh: group };
+    players[id] = { 
+        mesh: group, 
+        label: sprite,
+        name: data.name,
+        color: color
+    };
 }
 
 // --- PHYSICS ---
 function updatePhysics() {
-    const speed = 0.6;
-    const dir = new THREE.Vector3();
-    camera.getWorldDirection(dir);
-    dir.y = 0; dir.normalize();
-    const right = new THREE.Vector3();
-    right.crossVectors(camera.up, dir).normalize();
+    const speed = CONFIG.SPEED;
+    
+    // Get forward/right vectors based on camera yaw only (not pitch)
+    const forward = new THREE.Vector3(
+        -Math.sin(yaw),
+        0,
+        -Math.cos(yaw)
+    );
+    const right = new THREE.Vector3(
+        Math.cos(yaw),
+        0,
+        -Math.sin(yaw)
+    );
 
-    if(keys.w) camera.position.addScaledVector(dir, speed);
-    if(keys.s) camera.position.addScaledVector(dir, -speed);
-    if(keys.a) camera.position.addScaledVector(right, speed);
-    if(keys.d) camera.position.addScaledVector(right, -speed);
+    // Movement
+    if (keys.w) camera.position.addScaledVector(forward, speed);
+    if (keys.s) camera.position.addScaledVector(forward, -speed);
+    if (keys.a) camera.position.addScaledVector(right, -speed);
+    if (keys.d) camera.position.addScaledVector(right, speed);
 
-    velocity.y -= 0.03;
+    // Gravity
+    velocity.y -= CONFIG.GRAVITY;
     camera.position.y += velocity.y;
 
-    // Collision
-    let gx = Math.round(camera.position.x / BLOCK_SIZE);
-    let gz = Math.round(camera.position.z / BLOCK_SIZE);
-    
-    if(gx < 0 || gx >= WORLD_SIZE || gz < 0 || gz >= WORLD_SIZE) {
-        camera.position.x = Math.max(0, Math.min(WORLD_SIZE*BLOCK_SIZE, camera.position.x));
-        camera.position.z = Math.max(0, Math.min(WORLD_SIZE*BLOCK_SIZE, camera.position.z));
-    } else {
-        let ground = (window.worldHeights[gx][gz] || 0) + 8;
-        if(camera.position.y < ground) {
-            camera.position.y = ground;
-            velocity.y = 0;
-            canJump = true;
-        }
-    }
-    if(keys.space && canJump) { velocity.y = 0.6; canJump = false; }
+    // World boundaries (invisible walls)
+    const margin = CONFIG.BLOCK_SIZE;
+    const maxPos = CONFIG.WORLD_SIZE * CONFIG.BLOCK_SIZE - margin;
+    camera.position.x = Math.max(margin, Math.min(maxPos, camera.position.x));
+    camera.position.z = Math.max(margin, Math.min(maxPos, camera.position.z));
 
-    // Send Update
-    if (socket) {
-        socket.emit('move', { 
-            x: camera.position.x, 
-            y: camera.position.y, 
-            z: camera.position.z, 
-            rot: camera.rotation.y 
+    // Ground collision
+    const groundHeight = World.getGroundHeight(camera.position.x, camera.position.z);
+    const playerFeetHeight = groundHeight + CONFIG.PLAYER_HEIGHT;
+    
+    if (camera.position.y < playerFeetHeight) {
+        camera.position.y = playerFeetHeight;
+        velocity.y = 0;
+        canJump = true;
+    }
+
+    // Jump
+    if (keys.space && canJump) {
+        velocity.y = CONFIG.JUMP_FORCE;
+        canJump = false;
+    }
+
+    // Send position update
+    if (socket && socket.connected) {
+        socket.emit('move', {
+            x: camera.position.x,
+            y: camera.position.y,
+            z: camera.position.z,
+            rot: yaw
         });
     }
 }
@@ -219,110 +360,206 @@ function updatePhysics() {
 function animate() {
     requestAnimationFrame(animate);
     updatePhysics();
+    
+    // Make all player labels face camera
+    for (let id in players) {
+        if (players[id].label) {
+            players[id].label.quaternion.copy(camera.quaternion);
+        }
+    }
+    
     renderer.render(scene, camera);
 }
 
-// --- INPUTS & AUDIO (Standard WebRTC) ---
+// --- INPUTS ---
 function setupInputs() {
-    document.addEventListener('keydown', e => {
-        if(document.activeElement.tagName === 'INPUT') return;
-        if(e.key === 'w') keys.w = true;
-        if(e.key === 'a') keys.a = true;
-        if(e.key === 's') keys.s = true;
-        if(e.key === 'd') keys.d = true;
-        if(e.key === ' ') keys.space = true;
-        if(e.key === 't') {
-            document.getElementById('chat-input').style.display = 'block';
-            document.getElementById('chat-input').focus();
+    document.addEventListener('keydown', (e) => {
+        // Ignore if typing in chat
+        if (document.activeElement.tagName === 'INPUT') return;
+        
+        const key = e.key.toLowerCase();
+        if (key === 'w') keys.w = true;
+        if (key === 'a') keys.a = true;
+        if (key === 's') keys.s = true;
+        if (key === 'd') keys.d = true;
+        if (key === ' ') { keys.space = true; e.preventDefault(); }
+        
+        // Open chat
+        if (key === 't') {
+            e.preventDefault();
+            const chatInput = document.getElementById('chat-input');
+            chatInput.style.display = 'block';
+            chatInput.focus();
             document.exitPointerLock();
         }
-        if(e.key === 'v') setMic(true);
+        
+        // Push-to-talk
+        if (key === 'v' && isPushToTalk) setMic(true);
     });
-    document.addEventListener('keyup', e => {
-        if(e.key === 'w') keys.w = false;
-        if(e.key === 'a') keys.a = false;
-        if(e.key === 's') keys.s = false;
-        if(e.key === 'd') keys.d = false;
-        if(e.key === ' ') keys.space = false;
-        if(e.key === 'v' && isPushToTalk) setMic(false);
+    
+    document.addEventListener('keyup', (e) => {
+        const key = e.key.toLowerCase();
+        if (key === 'w') keys.w = false;
+        if (key === 'a') keys.a = false;
+        if (key === 's') keys.s = false;
+        if (key === 'd') keys.d = false;
+        if (key === ' ') keys.space = false;
+        if (key === 'v' && isPushToTalk) setMic(false);
     });
 
-    document.getElementById('chat-input').addEventListener('keypress', e => {
-        if(e.key === 'Enter') {
-            socket.emit('chat', e.target.value);
-            e.target.value = '';
-            e.target.style.display = 'none';
+    // Chat input handler
+    const chatInput = document.getElementById('chat-input');
+    chatInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+            const msg = chatInput.value.trim();
+            if (msg) {
+                socket.emit('chat', msg);
+            }
+            chatInput.value = '';
+            chatInput.style.display = 'none';
+            renderer.domElement.requestPointerLock();
+        }
+        if (e.key === 'Escape') {
+            chatInput.value = '';
+            chatInput.style.display = 'none';
             renderer.domElement.requestPointerLock();
         }
     });
 
-    document.getElementById('btn-ptt').onclick = () => { isPushToTalk=true; setMic(false); };
-    document.getElementById('btn-open').onclick = () => { isPushToTalk=false; setMic(true); };
+    // Voice control buttons
+    document.getElementById('btn-ptt').onclick = () => {
+        isPushToTalk = true;
+        setMic(false);
+        updateVoiceButtons();
+    };
+    
+    document.getElementById('btn-open').onclick = () => {
+        isPushToTalk = false;
+        setMic(true);
+        updateVoiceButtons();
+    };
 }
 
+function updateVoiceButtons() {
+    document.getElementById('btn-ptt').classList.toggle('active', isPushToTalk);
+    document.getElementById('btn-open').classList.toggle('active', !isPushToTalk);
+}
+
+// --- AUDIO ---
 async function setupAudio() {
     try {
         localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        setMic(false);
-    } catch(e) { console.log("Mic error", e); }
+        setMic(false); // Start muted
+        updateVoiceButtons();
+    } catch (e) {
+        console.log("Microphone access denied:", e);
+    }
 }
 
 function setMic(on) {
-    if(localStream) localStream.getAudioTracks()[0].enabled = on;
-    document.getElementById('btn-ptt').style.fontWeight = isPushToTalk ? 'bold' : 'normal';
-    document.getElementById('btn-open').style.fontWeight = !isPushToTalk ? 'bold' : 'normal';
+    if (localStream && localStream.getAudioTracks().length > 0) {
+        localStream.getAudioTracks()[0].enabled = on;
+        
+        // Update mic indicator
+        const indicator = document.getElementById('mic-indicator');
+        if (indicator) {
+            indicator.classList.toggle('active', on);
+        }
+    }
 }
 
-const rtcConfig = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
+// --- WebRTC Voice ---
+const rtcConfig = { 
+    iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] 
+};
 
 function initWebRTC(targetId, initiator) {
     const pc = new RTCPeerConnection(rtcConfig);
     peers[targetId] = pc;
     
-    if(localStream) localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
+    if (localStream) {
+        localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
+    }
 
-    pc.onicecandidate = e => {
-        if(e.candidate) socket.emit('voice-signal', { target: targetId, signal: { candidate: e.candidate } });
+    pc.onicecandidate = (e) => {
+        if (e.candidate) {
+            socket.emit('voice-signal', { 
+                target: targetId, 
+                signal: { candidate: e.candidate } 
+            });
+        }
     };
-    pc.ontrack = e => {
+    
+    pc.ontrack = (e) => {
         const audio = new Audio();
         audio.srcObject = e.streams[0];
-        audio.play();
+        audio.play().catch(err => console.log("Audio play error:", err));
     };
 
-    if(initiator) {
-        pc.createOffer().then(o => pc.setLocalDescription(o)).then(() => {
-            socket.emit('voice-signal', { target: targetId, signal: { sdp: pc.localDescription } });
-        });
+    if (initiator) {
+        pc.createOffer()
+            .then(o => pc.setLocalDescription(o))
+            .then(() => {
+                socket.emit('voice-signal', { 
+                    target: targetId, 
+                    signal: { sdp: pc.localDescription } 
+                });
+            });
     }
 }
 
 function handleVoiceSignal(data) {
     let pc = peers[data.from];
+    
     if (!pc) {
         pc = new RTCPeerConnection(rtcConfig);
         peers[data.from] = pc;
-        if(localStream) localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
-        pc.onicecandidate = e => {
-            if(e.candidate) socket.emit('voice-signal', { target: data.from, signal: { candidate: e.candidate } });
+        
+        if (localStream) {
+            localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
+        }
+        
+        pc.onicecandidate = (e) => {
+            if (e.candidate) {
+                socket.emit('voice-signal', { 
+                    target: data.from, 
+                    signal: { candidate: e.candidate } 
+                });
+            }
         };
-        pc.ontrack = e => {
+        
+        pc.ontrack = (e) => {
             const audio = new Audio();
             audio.srcObject = e.streams[0];
-            audio.play();
+            audio.play().catch(err => console.log("Audio play error:", err));
         };
     }
 
     const sig = data.signal;
+    
     if (sig.sdp) {
-        pc.setRemoteDescription(new RTCSessionDescription(sig.sdp)).then(() => {
-            if (pc.remoteDescription.type === 'offer') {
-                pc.createAnswer().then(a => pc.setLocalDescription(a)).then(() => {
-                    socket.emit('voice-signal', { target: data.from, signal: { sdp: pc.localDescription } });
-                });
-            }
-        });
+        pc.setRemoteDescription(new RTCSessionDescription(sig.sdp))
+            .then(() => {
+                if (pc.remoteDescription.type === 'offer') {
+                    return pc.createAnswer();
+                }
+            })
+            .then(answer => {
+                if (answer) {
+                    return pc.setLocalDescription(answer);
+                }
+            })
+            .then(() => {
+                if (pc.localDescription && pc.remoteDescription.type === 'offer') {
+                    socket.emit('voice-signal', { 
+                        target: data.from, 
+                        signal: { sdp: pc.localDescription } 
+                    });
+                }
+            })
+            .catch(err => console.error("WebRTC error:", err));
     } else if (sig.candidate) {
-        pc.addIceCandidate(new RTCIceCandidate(sig.candidate));
+        pc.addIceCandidate(new RTCIceCandidate(sig.candidate))
+            .catch(err => console.error("ICE error:", err));
     }
 }
