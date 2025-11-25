@@ -247,6 +247,7 @@ button:hover {
 .chat-msg {
     margin: 4px 0;
     line-height: 1.4;
+    color: white;
 }
 
 .chat-name {
@@ -349,27 +350,24 @@ button:hover {
     color: #4CAF50;
 }
 
+/* Controls Help */
 #controls-help {
     position: absolute;
-    top: 15px;
-    right: 15px;
-    background: rgba(0, 0, 0, 0.6);
-    padding: 12px 15px;
-    border-radius: 8px;
-    font-size: 0.8rem;
-    color: rgba(255, 255, 255, 0.7);
-    font-family: sans-serif;
+    top: 120px;
+    left: 15px;
+    font-size: 2vw;
+    color: rgba(255, 255, 255, 0.6);
+    pointer-events: none;
+    text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.8);
 }
 
 #controls-help div {
-    margin: 4px 0;
+    margin: 0.5em 0;
 }
 
 #controls-help span {
     display: inline-block;
-    background: rgba(255, 255, 255, 0.2);
-    padding: 2px 6px;
-    border-radius: 3px;
-    margin-right: 5px;
+    margin-right: 0.5em;
     font-family: monospace;
+    color: rgba(255, 255, 255, 0.8);
 }
