@@ -8,11 +8,8 @@ const server = http.createServer(app);
 const io = new Server(server);
 const PORT = process.env.PORT || 3000;
 
-// --- SECURITY CHECK ---
-// The server will refuse to start if the password is not set in the environment
 if (!process.env.ADMIN_PASSWORD) {
-    console.error("❌ CRITICAL ERROR: ADMIN_PASSWORD is missing.");
-    console.error("Please set the Environment Variable in DigitalOcean/Kinsta settings.");
+    console.error("FATAL: ADMIN_PASSWORD missing.");
     process.exit(1);
 }
 
@@ -21,23 +18,21 @@ const validInvites = new Set();
 const sessions = new Map();
 let players = {};
 
-app.use(express.static('public'));
 app.use(express.json());
 
-// Routes
-app.get('/', (req, res) => {
-    res.sendFile(__dirname + '/public/index.html');
-});
+app.use(express.static('public'));
 
 app.get('/kitchen', (req, res) => {
-    res.sendFile(__dirname + '/public/kitchen.html');
+    res.sendFile(__dirname + '/pantry/kitchen.html');
 });
 
-// API: Login
+app.get('/k-supply.js', (req, res) => {
+    res.sendFile(__dirname + '/pantry/controls.js');
+});
+
 app.post('/api/login', (req, res) => {
     const { password, name } = req.body;
     
-    // Server-side validation
     if (password === ADMIN_PASSWORD) {
         const token = uuidv4();
         sessions.set(token, { 
@@ -49,12 +44,10 @@ app.post('/api/login', (req, res) => {
         console.log(`Admin logged in. Token: ${token}`);
         res.json({ success: true, token: token });
     } else {
-        // Slow down brute force attempts
         setTimeout(() => res.json({ success: false, error: "Invalid Password" }), 500);
     }
 });
 
-// API: Join (Public)
 app.post('/api/join', (req, res) => {
     const { invite, name } = req.body;
 
@@ -74,7 +67,6 @@ app.post('/api/join', (req, res) => {
     }
 });
 
-// API: Generate Invite (Protected)
 app.post('/api/generate-invite', (req, res) => {
     const { token } = req.body;
     const session = sessions.get(token);
@@ -89,7 +81,21 @@ app.post('/api/generate-invite', (req, res) => {
     }
 });
 
-// Socket.io Authentication Middleware
+app.post('/api/nuke', (req, res) => {
+    const { token } = req.body;
+    const session = sessions.get(token);
+
+    if (session && session.isAdmin) {
+        console.log("WORLD NUKED BY ADMIN");
+        validInvites.clear();
+        players = {};
+        io.disconnectSockets();
+        res.json({ success: true });
+    } else {
+        res.status(403).json({ success: false, error: "Unauthorized" });
+    }
+});
+
 io.use((socket, next) => {
     const token = socket.handshake.auth.token;
     const session = sessions.get(token);
@@ -102,7 +108,6 @@ io.use((socket, next) => {
     }
 });
 
-// Socket.io Game Loop
 io.on('connection', (socket) => {
     const user = socket.user;
     
