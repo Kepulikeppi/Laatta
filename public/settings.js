@@ -31,5 +31,9 @@ const CONFIG = {
     TERRAIN_PERSISTENCE: 0.5, // How much each octave contributes
     
     // Mouse sensitivity
-    MOUSE_SENSITIVITY: 0.002
+    MOUSE_SENSITIVITY: 0.002,
+    
+    // Network
+    POSITION_UPDATE_RATE: 10,      // Updates per second (10 = every 100ms)
+    INTERPOLATION_SPEED: 0.2       // How fast other players interpolate (0-1, higher = faster)
 };

@@ -5,6 +5,7 @@ let peers = {};
 let localStream;
 let isPushToTalk = true;
 let isPointerLocked = false;
+let isPaused = false;
 
 // Camera rotation (for mouse look)
 let pitch = 0; // Up/down rotation
@@ -18,6 +19,10 @@ let canJump = false;
 // Player info
 let myName = "";
 let myColor = "";
+
+// Network throttling
+let lastPositionUpdate = 0;
+let lastSentPosition = { x: 0, y: 0, z: 0, rot: 0 };
 
 function setupThreeJS() {
     // Create scene
@@ -64,13 +69,19 @@ function setupPointerLock() {
     const canvas = renderer.domElement;
     
     canvas.addEventListener('click', () => {
-        if (!isPointerLocked && document.activeElement.tagName !== 'INPUT') {
+        if (!isPointerLocked && !isPaused && document.activeElement.tagName !== 'INPUT') {
             canvas.requestPointerLock();
         }
     });
     
     document.addEventListener('pointerlockchange', () => {
         isPointerLocked = document.pointerLockElement === canvas;
+        
+        // If pointer lock was released (e.g., by pressing ESC) and not already paused, show pause menu
+        if (!isPointerLocked && !isPaused) {
+            showPauseMenu();
+        }
+        
         updateUIVisibility();
     });
     
@@ -90,10 +101,57 @@ function setupPointerLock() {
     });
 }
 
+function showPauseMenu() {
+    isPaused = true;
+    const pauseMenu = document.getElementById('pause-menu');
+    if (pauseMenu) {
+        pauseMenu.style.display = 'flex';
+    }
+    updateUIVisibility();
+}
+
+function hidePauseMenu() {
+    isPaused = false;
+    const pauseMenu = document.getElementById('pause-menu');
+    if (pauseMenu) {
+        pauseMenu.style.display = 'none';
+    }
+    // Re-lock pointer
+    if (renderer && renderer.domElement) {
+        renderer.domElement.requestPointerLock();
+    }
+}
+
+function continueGame() {
+    hidePauseMenu();
+}
+
+function exitGame() {
+    // Disconnect socket
+    if (socket) {
+        socket.disconnect();
+    }
+    
+    // Stop audio
+    if (localStream) {
+        localStream.getTracks().forEach(track => track.stop());
+    }
+    
+    // Close all peer connections
+    for (let id in peers) {
+        peers[id].close();
+    }
+    peers = {};
+    
+    // Reload the page to go back to front page
+    window.location.reload();
+}
+
 function updateUIVisibility() {
     const hint = document.getElementById('pointer-hint');
     if (hint) {
-        hint.style.display = isPointerLocked ? 'none' : 'block';
+        // Only show "click to play" hint if not paused and not pointer locked
+        hint.style.display = (!isPointerLocked && !isPaused) ? 'block' : 'none';
     }
 }
 
@@ -130,8 +188,21 @@ function initGame(token, playerName, playerColor) {
     
     setupSocket(token);
     setupInputs();
+    setupPauseMenu();
     setupAudio();
     animate();
+}
+
+function setupPauseMenu() {
+    const continueBtn = document.getElementById('btn-continue');
+    const exitBtn = document.getElementById('btn-exit');
+    
+    if (continueBtn) {
+        continueBtn.addEventListener('click', continueGame);
+    }
+    if (exitBtn) {
+        exitBtn.addEventListener('click', exitGame);
+    }
 }
 
 function setupSocket(token) {
@@ -169,13 +240,11 @@ function setupSocket(token) {
 
     socket.on('player-moved', (p) => {
         if (players[p.id]) {
-            players[p.id].mesh.position.set(p.x, p.y, p.z);
-            players[p.id].mesh.rotation.y = p.rot;
-            
-            // Update name label to face camera
-            if (players[p.id].label) {
-                players[p.id].label.lookAt(camera.position);
-            }
+            // Store target position for interpolation (don't set directly)
+            players[p.id].targetX = p.x;
+            players[p.id].targetY = p.y;
+            players[p.id].targetZ = p.z;
+            players[p.id].targetRot = p.rot;
         }
     });
 
@@ -294,12 +363,23 @@ function createPlayerMesh(id, data) {
         mesh: group, 
         label: sprite,
         name: data.name,
-        color: color
+        color: color,
+        // Target positions for interpolation
+        targetX: data.x || 0,
+        targetY: data.y || 0,
+        targetZ: data.z || 0,
+        targetRot: data.rot || 0
     };
+    
+    // Set initial position
+    group.position.set(players[id].targetX, players[id].targetY, players[id].targetZ);
 }
 
 // --- PHYSICS ---
 function updatePhysics() {
+    // Don't update physics if paused
+    if (isPaused) return;
+    
     const speed = CONFIG.SPEED;
     
     // Get forward/right vectors based on camera yaw only (not pitch)
@@ -346,14 +426,35 @@ function updatePhysics() {
         canJump = false;
     }
 
-    // Send position update
+    // Send position update (throttled)
     if (socket && socket.connected) {
-        socket.emit('move', {
-            x: camera.position.x,
-            y: camera.position.y,
-            z: camera.position.z,
-            rot: yaw
-        });
+        const now = Date.now();
+        const updateInterval = 1000 / CONFIG.POSITION_UPDATE_RATE;
+        
+        if (now - lastPositionUpdate >= updateInterval) {
+            // Only send if position or rotation changed
+            const posChanged = 
+                Math.abs(camera.position.x - lastSentPosition.x) > 0.01 ||
+                Math.abs(camera.position.y - lastSentPosition.y) > 0.01 ||
+                Math.abs(camera.position.z - lastSentPosition.z) > 0.01 ||
+                Math.abs(yaw - lastSentPosition.rot) > 0.01;
+            
+            if (posChanged) {
+                socket.emit('move', {
+                    x: camera.position.x,
+                    y: camera.position.y,
+                    z: camera.position.z,
+                    rot: yaw
+                });
+                
+                lastSentPosition.x = camera.position.x;
+                lastSentPosition.y = camera.position.y;
+                lastSentPosition.z = camera.position.z;
+                lastSentPosition.rot = yaw;
+            }
+            
+            lastPositionUpdate = now;
+        }
     }
 }
 
@@ -361,10 +462,25 @@ function animate() {
     requestAnimationFrame(animate);
     updatePhysics();
     
-    // Make all player labels face camera
+    // Interpolate other players' positions smoothly
     for (let id in players) {
-        if (players[id].label) {
-            players[id].label.quaternion.copy(camera.quaternion);
+        const p = players[id];
+        if (p.mesh && p.targetX !== undefined) {
+            // Lerp position
+            p.mesh.position.x += (p.targetX - p.mesh.position.x) * CONFIG.INTERPOLATION_SPEED;
+            p.mesh.position.y += (p.targetY - p.mesh.position.y) * CONFIG.INTERPOLATION_SPEED;
+            p.mesh.position.z += (p.targetZ - p.mesh.position.z) * CONFIG.INTERPOLATION_SPEED;
+            
+            // Lerp rotation (handle wraparound)
+            let rotDiff = p.targetRot - p.mesh.rotation.y;
+            if (rotDiff > Math.PI) rotDiff -= Math.PI * 2;
+            if (rotDiff < -Math.PI) rotDiff += Math.PI * 2;
+            p.mesh.rotation.y += rotDiff * CONFIG.INTERPOLATION_SPEED;
+        }
+        
+        // Make label face camera
+        if (p.label) {
+            p.label.quaternion.copy(camera.quaternion);
         }
     }
     
@@ -376,6 +492,9 @@ function setupInputs() {
     document.addEventListener('keydown', (e) => {
         // Ignore if typing in chat
         if (document.activeElement.tagName === 'INPUT') return;
+        
+        // Ignore movement keys if paused
+        if (isPaused) return;
         
         const key = e.key.toLowerCase();
         if (key === 'w') keys.w = true;
@@ -422,7 +541,7 @@ function setupInputs() {
         if (e.key === 'Escape') {
             chatInput.value = '';
             chatInput.style.display = 'none';
-            renderer.domElement.requestPointerLock();
+            // Don't re-lock pointer, let pause menu show
         }
     });
 
