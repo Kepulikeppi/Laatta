@@ -109,9 +109,11 @@ app.post('/api/join', (req, res) => {
     }
 });
 
-// API: Generate invite (admin only)
 app.post('/api/generate-invite', (req, res) => {
     const { token } = req.body;
+    console.log('Generate invite requested with token:', token);
+    console.log('Sessions map has:', Array.from(sessions.keys()));
+    
     const session = sessions.get(token);
 
     if (session && session.isAdmin) {
@@ -120,6 +122,7 @@ app.post('/api/generate-invite', (req, res) => {
         console.log(`Invite generated: ${newCode}`);
         res.json({ success: true, code: newCode });
     } else {
+        console.log('Session found:', session);
         res.status(403).json({ success: false, error: "Unauthorized" });
     }
 });
